@@ -1,174 +1,163 @@
-import type { NextApiRequest, NextApiResponse } from "next";
 import dbConnect from "@/lib/database/database";
 import Request from "@/lib/database/requests";
 import { HTTP_STATUS_CODE, ResponseType, RESPONSES } from "@/lib/types/apiResponse";
 import { PAGINATION_PAGE_SIZE } from "@/lib/constants/config";
 
 // not using serverResponseBuilder.ts for debugging purposes in postman; also changed response message for more clarity in certain cases
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+export async function GET(request: Request) {
   await dbConnect();
+  try {
+    const { searchParams } = new URL(request.url);
+    const page = parseInt(searchParams.get("page") || "1");
+    const skip = (page - 1) * PAGINATION_PAGE_SIZE;
+    const status = searchParams.get("status") || undefined;
 
-  if (req.method === 'PUT') {
-    try {
-      const { requestorName, itemRequested } = req.body;
-
-      if (!requestorName || !itemRequested) {
-        return res
-          .status(RESPONSES[ResponseType.INVALID_INPUT].code)
-          .json({ success: false, message: RESPONSES[ResponseType.INVALID_INPUT].message });
-
-      }
-
-      const now = new Date();
-      
-      const requestCount = await Request.countDocuments();
-      const newRequestId = requestCount + 1;
-
-      const newRequest = await Request.create({
-        requestId: newRequestId,
-        requestorName,
-        itemRequested,
-        createdDate: now,
-        lastEditedDate: now,
-        status: 'pending',
-      });
-
-      res
-        .status(RESPONSES[ResponseType.CREATED].code)
-        .json({ success: true, message: RESPONSES[ResponseType.CREATED].message, data: newRequest });
-
-    } catch (error: any) {
-        res
-        .status(RESPONSES[ResponseType.UNKNOWN_ERROR].code)
-        .json({ success: false, message: error.message || RESPONSES[ResponseType.UNKNOWN_ERROR].message });
+    const filter: Record<string, any> = {};
+    if (status) {
+      filter.status = status;
     }
-  }
 
-  else if (req.method === "GET") {
-    try {
-      const page = parseInt(req.query.page as string) || 1;
-      const skip = (page - 1) * PAGINATION_PAGE_SIZE;
-      const status = req.query.status as string | undefined
+    const totalRequests = await Request.countDocuments(filter);
+    const requests = await Request.find(filter)
+      .sort({ createdDate: -1 })
+      .skip(skip)
+      .limit(PAGINATION_PAGE_SIZE);
 
-      const filter: Record<string, any> = {};
-      if (status) {
-        filter.status = status;
-      }
-
-      const totalRequests = await Request.countDocuments(filter);
-      const requests = await Request.find({})
-        .sort({ createdDate: -1 })
-        .skip(skip)
-        .limit(PAGINATION_PAGE_SIZE);
-
-      res.status(RESPONSES[ResponseType.SUCCESS].code).json({
+    return new Response(
+      JSON.stringify({
         success: true,
         message: RESPONSES[ResponseType.SUCCESS].message,
         page,
         totalPages: Math.ceil(totalRequests / PAGINATION_PAGE_SIZE),
         totalRequests,
         data: requests,
-      });
-    } catch (error: any) {
-      res
-        .status(RESPONSES[ResponseType.UNKNOWN_ERROR].code)
-        .json({ success: false, message: error.message || RESPONSES[ResponseType.UNKNOWN_ERROR].message });
-    }
+      }),
+      { status: RESPONSES[ResponseType.SUCCESS].code, headers: { "Content-Type": "application/json" } }
+    );
+  } catch (error: any) {
+    return new Response(
+      JSON.stringify({ success: false, message: error.message || RESPONSES[ResponseType.UNKNOWN_ERROR].message }),
+      { status: RESPONSES[ResponseType.UNKNOWN_ERROR].code, headers: { "Content-Type": "application/json" } }
+    );
   }
+}
 
-  // handles above/beyond batch patch for status updates
-  else if (req.method === "PATCH") {
-    try {
-      const body = req.body;
+export async function PUT(request: Request) {
+  await dbConnect();
+  try {
+    const body = await request.json();
+    const { requestorName, itemRequested } = body;
+    if (!requestorName || !itemRequested) {
+      return new Response(
+        JSON.stringify({ success: false, message: RESPONSES[ResponseType.INVALID_INPUT].message }),
+        { status: RESPONSES[ResponseType.INVALID_INPUT].code, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    const now = new Date();
+    const requestCount = await Request.countDocuments();
+    const newRequestId = requestCount + 1;
+    const newRequest = await Request.create({
+      requestId: newRequestId,
+      requestorName,
+      itemRequested,
+      createdDate: now,
+      lastEditedDate: now,
+      status: 'pending',
+    });
+    return new Response(
+      JSON.stringify({ success: true, message: RESPONSES[ResponseType.CREATED].message, data: newRequest }),
+      { status: RESPONSES[ResponseType.CREATED].code, headers: { "Content-Type": "application/json" } }
+    );
+  } catch (error: any) {
+    return new Response(
+      JSON.stringify({ success: false, message: error.message || RESPONSES[ResponseType.UNKNOWN_ERROR].message }),
+      { status: RESPONSES[ResponseType.UNKNOWN_ERROR].code, headers: { "Content-Type": "application/json" } }
+    );
+  }
+}
 
-      // single edit
-      if (body.id && body.status) {
-        const allowedStatuses = ["pending", "completed", "approved", "rejected"];
-        if (!allowedStatuses.includes(body.status)) {
-          return res
-            .status(RESPONSES[ResponseType.INVALID_INPUT].code)
-            .json({ success: false, message: "Invalid status value." });
-        }
-
+export async function PATCH(request: Request) {
+  await dbConnect();
+  try {
+    const body = await request.json();
+    // single edit
+    if (body.id && body.status) {
+      const allowedStatuses = ["pending", "completed", "approved", "rejected"];
+      if (!allowedStatuses.includes(body.status)) {
+        return new Response(
+          JSON.stringify({ success: false, message: "Invalid status value." }),
+          { status: RESPONSES[ResponseType.INVALID_INPUT].code, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      const updatedRequest = await Request.findOneAndUpdate(
+        { requestId: body.id },
+        { status: body.status, lastEditedDate: new Date() },
+        { new: true }
+      );
+      if (!updatedRequest) {
+        return new Response(
+          JSON.stringify({ success: false, message: RESPONSES[ResponseType.INVALID_INPUT].message }),
+          { status: RESPONSES[ResponseType.INVALID_INPUT].code, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return new Response(
+        JSON.stringify({ success: true, message: RESPONSES[ResponseType.SUCCESS].message, data: updatedRequest }),
+        { status: RESPONSES[ResponseType.SUCCESS].code, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    // batch edit
+    if (Array.isArray(body.updates)) {
+      const results = [];
+      for (const update of body.updates) {
+        const { id, status } = update;
+        if (!id || !status) continue;
         const updatedRequest = await Request.findOneAndUpdate(
-          { requestId: body.id },
-          { status: body.status, lastEditedDate: new Date() },
+          { requestId: id },
+          { status, lastEditedDate: new Date() },
           { new: true }
         );
-
-        if (!updatedRequest) {
-          return res
-            .status(RESPONSES[ResponseType.INVALID_INPUT].code)
-            .json({ success: false, message: RESPONSES[ResponseType.INVALID_INPUT].message});
-        }
-
-        return res.status(RESPONSES[ResponseType.SUCCESS].code).json({
-          success: true,
-          message: RESPONSES[ResponseType.SUCCESS].message,
-          data: updatedRequest,
-        });
+        if (updatedRequest) results.push(updatedRequest);
       }
-
-      // batch edit
-      if (Array.isArray(body.updates)) {
-        const results = [];
-        for (const update of body.updates) {
-          const { id, status } = update;
-          if (!id || !status) continue;
-
-          const updatedRequest = await Request.findOneAndUpdate(
-            { requestId: id },
-            { status, lastEditedDate: new Date() },
-            { new: true }
-          );
-          if (updatedRequest) results.push(updatedRequest);
-        }
-
-        return res.status(RESPONSES[ResponseType.SUCCESS].code).json({
-          success: true,
-          message: RESPONSES[ResponseType.SUCCESS].message,
-          data: results,
-        });
-      }
-
-      return res
-        .status(RESPONSES[ResponseType.INVALID_INPUT].code)
-        .json({ success: false, message: RESPONSES[ResponseType.INVALID_INPUT].message});
-    } catch (error: any) {
-      res
-        .status(RESPONSES[ResponseType.UNKNOWN_ERROR].code)
-        .json({ success: false, message: error.message || RESPONSES[ResponseType.UNKNOWN_ERROR].message });
+      return new Response(
+        JSON.stringify({ success: true, message: RESPONSES[ResponseType.SUCCESS].message, data: results }),
+        { status: RESPONSES[ResponseType.SUCCESS].code, headers: { "Content-Type": "application/json" } }
+      );
     }
+    return new Response(
+      JSON.stringify({ success: false, message: RESPONSES[ResponseType.INVALID_INPUT].message }),
+      { status: RESPONSES[ResponseType.INVALID_INPUT].code, headers: { "Content-Type": "application/json" } }
+    );
+  } catch (error: any) {
+    return new Response(
+      JSON.stringify({ success: false, message: error.message || RESPONSES[ResponseType.UNKNOWN_ERROR].message }),
+      { status: RESPONSES[ResponseType.UNKNOWN_ERROR].code, headers: { "Content-Type": "application/json" } }
+    );
   }
+}
 
-  // above and beyond batch delete
-  else if (req.method === "DELETE") {
-    try {
-      const { ids } = req.body;
-
-      if (!Array.isArray(ids) || ids.length === 0) {
-        return res
-          .status(RESPONSES[ResponseType.INVALID_INPUT].code)
-          .json({ success: false, message: RESPONSES[ResponseType.INVALID_INPUT].message });
-      }
-
-      const result = await Request.deleteMany({ requestId: { $in: ids } });
-
-      res.status(RESPONSES[ResponseType.SUCCESS].code).json({
+export async function DELETE(request: Request) {
+  await dbConnect();
+  try {
+    const body = await request.json();
+    const { ids } = body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return new Response(
+        JSON.stringify({ success: false, message: RESPONSES[ResponseType.INVALID_INPUT].message }),
+        { status: RESPONSES[ResponseType.INVALID_INPUT].code, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    const result = await Request.deleteMany({ requestId: { $in: ids } });
+    return new Response(
+      JSON.stringify({
         success: true,
         message: `Deleted ${result.deletedCount} requests.` || RESPONSES[ResponseType.SUCCESS].message,
-      });
-    } catch (error: any) {
-      res
-        .status(RESPONSES[ResponseType.UNKNOWN_ERROR].code)
-        .json({ success: false, message: error.message || RESPONSES[ResponseType.UNKNOWN_ERROR].message });
-    }
-  }
-
-  // handle unsupported methods
-  else {
-    res
-      .status(405)
-      .json({ success: false, message: "Method not allowed" });
+      }),
+      { status: RESPONSES[ResponseType.SUCCESS].code, headers: { "Content-Type": "application/json" } }
+    );
+  } catch (error: any) {
+    return new Response(
+      JSON.stringify({ success: false, message: error.message || RESPONSES[ResponseType.UNKNOWN_ERROR].message }),
+      { status: RESPONSES[ResponseType.UNKNOWN_ERROR].code, headers: { "Content-Type": "application/json" } }
+    );
   }
 }
